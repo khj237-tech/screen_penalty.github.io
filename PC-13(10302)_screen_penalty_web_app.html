@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>스크린 패널티 (Screen Penalty)</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome Icons (v6.5.1 for X/Twitter icon support) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brandDark: '#121212',
+            brandCard: '#1E1E1E',
+            brandBorder: '#2A2A2A',
+            brandGreen: '#10B981',
+            brandGreenHover: '#059669',
+            brandRed: '#EF4444',
+            brandRedHover: '#DC2626',
+            brandGray: '#A1A1AA'
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    body {
+      font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+      background-color: #09090B;
+      color: #F4F4F5;
+    }
+    .warning-glow {
+      box-shadow: 0 0 15px rgba(239, 68, 68, 0.3);
+    }
+  </style>
+  <script>
+    // App Presets
+    const APPS_DATA = [
+      { id: 'youtube', name: '유튜브 (YouTube)', icon: 'fa-brands fa-youtube', color: '#FF0000', defaultLimitHours: 2 },
+      { id: 'instagram', name: '인스타그램 (Instagram)', icon: 'fa-brands fa-instagram', color: '#E4405F', defaultLimitHours: 1.5 },
+      { id: 'facebook', name: '페이스북 (Facebook)', icon: 'fa-brands fa-facebook', color: '#1877F2', defaultLimitHours: 1 },
+      { id: 'x', name: 'X (트위터)', icon: 'fa-brands fa-x-twitter', color: '#FFFFFF', defaultLimitHours: 1 },
+      { id: 'band', name: '네이버 밴드 (Band)', icon: 'fa-solid fa-people-group', color: '#2DB400', defaultLimitHours: 1 },
+      { id: 'pinterest', name: '핀터레스트 (Pinterest)', icon: 'fa-brands fa-pinterest', color: '#BD081C', defaultLimitHours: 1 },
+      { id: 'tiktok', name: '틱톡 (TikTok)', icon: 'fa-brands fa-tiktok', color: '#00F2FE', defaultLimitHours: 2 }
+    ];
+
+    // State Management
+    let selectedAppsState = {}; // { youtube: { hours: 2, remainingSec: 7200, blockWeb: true } }
+    let lockTimerInterval = null;
+    let remainingSeconds = 0;
+
+    // Helper: Format hours into "X시간 Y분" string
+    window.formatHoursText = function(hoursNum) {
+      const h = Math.floor(hoursNum);
+      const m = Math.round((hoursNum - h) * 60);
+      if (h === 0) return `${m}분`;
+      if (m === 0) return `${h}시간`;
+      return `${h}시간 ${m}분`;
+    };
+
+    // Helper: Format seconds into readable text
+    window.formatSecondsToReadable = function(seconds) {
+      if (seconds <= 0) return "시간 완료";
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      
+      let text = "";
+      if (h > 0) text += `${h}시간 `;
+      if (m > 0 || h > 0) text += `${m}분 `;
+      text += `${s}초`;
+      return text;
+    };
+
+    // Navigation function
+    window.goToStep = function(stepId) {
+      const steps = ['stepOnboarding', 'stepSelectApp', 'stepActivePenalty', 'stepReport'];
+      steps.forEach(s => {
+        const el = document.getElementById(s);
+        if (el) el.classList.add('hidden');
+      });
+      const target = document.getElementById(stepId);
+      if (target) target.classList.remove('hidden');
+
+      if (stepId === 'stepSelectApp') {
+        renderAppSelectionList();
+      }
+    };
+
+    // Request Notification Permission
+    window.requestNotificationPermission = function() {
+      if ("Notification" in window && Notification.permission !== "granted") {
+        Notification.requestPermission();
+      }
+    };
+
+    // Render Selection Step
+    window.renderAppSelectionList = function() {
+      const container = document.getElementById('appListContainer');
+      if (!container) return;
+      container.innerHTML = '';
+
+      APPS_DATA.forEach(app => {
+        const isSelected = !!selectedAppsState[app.id];
+        const currentData = selectedAppsState[app.id] || { 
+          hours: app.defaultLimitHours, 
+          blockWeb: true, 
+          remainingSec: Math.round(app.defaultLimitHours * 3600) 
+        };
+
+        const appCard = document.createElement('div');
+        appCard.className = `p-3.5 rounded-xl border transition cursor-pointer ${
+          isSelected ? 'bg-zinc-800/90 border-brandGreen' : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
+        }`;
+
+        const isRunning = currentData.remainingSec > 0 && lockTimerInterval !== null;
+
+        appCard.innerHTML = `
+          <div class="flex items-center justify-between" onclick="toggleAppSelect('${app.id}')">
+            <div class="flex items-center space-x-3">
+              <div class="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center text-lg" style="color: ${app.color}">
+                <i class="${app.icon}"></i>
+              </div>
+              <div>
+                <div class="text-sm font-bold text-white flex items-center gap-2">
+                  ${app.name}
+                  ${isSelected && isRunning ? `<span class="text-[10px] text-brandGreen bg-emerald-950/80 border border-emerald-700/60 px-2 py-0.5 rounded-full font-normal">잠금 진행 중</span>` : ''}
+                </div>
+                <div class="text-[11px] text-brandGray">권장 권한: 앱/웹/알림 완전 차단</div>
+              </div>
+            </div>
+            <input type="checkbox" ${isSelected ? 'checked' : ''} class="w-5 h-5 accent-emerald-500 rounded cursor-pointer">
+          </div>
+
+          ${isSelected ? `
+            <div class="mt-3 pt-3 border-t border-zinc-800/80 space-y-3" onclick="event.stopPropagation()">
+              <div class="flex items-center justify-between">
+                <label class="text-xs text-brandGray">일일 사용 제한 시간:</label>
+                <div class="flex items-center space-x-1">
+                  <select onchange="updateAppHours('${app.id}', this.value)" class="bg-zinc-800 text-white border border-zinc-700 rounded text-xs px-2 py-1 font-mono">
+                    ${[0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12].map(h => 
+                      `<option value="${h}" ${currentData.hours == h ? 'selected' : ''}>${formatHoursText(h)}</option>`
+                    ).join('')}
+                  </select>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between">
+                <label class="text-xs text-brandGray cursor-pointer" for="webCheck_${app.id}">모바일 웹사이트도 같이 차단</label>
+                <input type="checkbox" id="webCheck_${app.id}" ${currentData.blockWeb ? 'checked' : ''} 
+                       onchange="updateAppBlockWeb('${app.id}', this.checked)"
+                       class="w-4 h-4 accent-emerald-500 rounded">
+              </div>
+
+              ${isRunning ? `
+                <div class="text-[11px] text-amber-400 bg-amber-950/40 p-2 rounded border border-amber-800/40 flex justify-between items-center">
+                  <span>현재 남은 시간:</span>
+                  <span class="font-bold font-mono">${formatSecondsToReadable(currentData.remainingSec)}</span>
+                </div>
+              ` : ''}
+            </div>
+          ` : ''}
+        `;
+        container.appendChild(appCard);
+      });
+
+      const count = Object.keys(selectedAppsState).length;
+      const countEl = document.getElementById('selectedCount');
+      if (countEl) countEl.innerText = count;
+    };
+
+    window.toggleAppSelect = function(appId) {
+      if (selectedAppsState[appId]) {
+        delete selectedAppsState[appId];
+      } else {
+        const app = APPS_DATA.find(a => a.id === appId);
+        selectedAppsState[appId] = { 
+          hours: app.defaultLimitHours, 
+          remainingSec: Math.round(app.defaultLimitHours * 3600),
+          blockWeb: true
+        };
+      }
+      renderAppSelectionList();
+    };
+
+    window.updateAppHours = function(appId, hours) {
+      if (selectedAppsState[appId]) {
+        const h = parseFloat(hours);
+        selectedAppsState[appId].hours = h;
+        selectedAppsState[appId].remainingSec = Math.round(h * 3600);
+      }
+    };
+
+    window.updateAppBlockWeb = function(appId, checked) {
+      if (selectedAppsState[appId]) {
+        selectedAppsState[appId].blockWeb = checked;
+      }
+    };
+
+    // Start Lockout
+    window.startLockout = function() {
+      const selectedKeys = Object.keys(selectedAppsState);
+      if (selectedKeys.length === 0) {
+        showModal("앱을 선택해 주세요", "최소 1개 이상의 차단할 앱을 선택해야 잠금을 시작할 수 있습니다.", "warning");
+        return;
+      }
+
+      requestNotificationPermission();
+
+      selectedKeys.forEach(k => {
+        if (!selectedAppsState[k].remainingSec || selectedAppsState[k].remainingSec <= 0) {
+          selectedAppsState[k].remainingSec = Math.round(selectedAppsState[k].hours * 3600);
+        }
+      });
+
+      let maxSec = 0;
+      selectedKeys.forEach(k => {
+        if (selectedAppsState[k].remainingSec > maxSec) maxSec = selectedAppsState[k].remainingSec;
+      });
+
+      remainingSeconds = maxSec;
+
+      renderActivePenaltyScreen();
+      updateNotificationBanner();
+      goToStep('stepActivePenalty');
+
+      updateTimerDisplay();
+
+      if (!lockTimerInterval) {
+        lockTimerInterval = setInterval(updateTimer, 1000);
+      }
+    };
+
+    // Active Penalty Screen Render
+    function renderActivePenaltyScreen() {
+      const activeContainer = document.getElementById('activeBlockedList');
+      if (!activeContainer) return;
+      activeContainer.innerHTML = '';
+
+      Object.keys(selectedAppsState).forEach(appId => {
+        const app = APPS_DATA.find(a => a.id === appId);
+        const config = selectedAppsState[appId];
+
+        const item = document.createElement('div');
+        item.className = "flex items-center justify-between p-3 rounded-lg bg-zinc-800/60 border border-zinc-700/60 hover:bg-zinc-800 transition cursor-pointer";
+        item.onclick = () => showBlockedAppAttemptModal(app.name);
+
+        const readableTime = formatSecondsToReadable(config.remainingSec);
+
+        item.innerHTML = `
+          <div class="flex items-center space-x-2.5">
+            <i class="${app.icon} text-base" style="color: ${app.color}"></i>
+            <div>
+              <div class="text-xs font-bold text-zinc-100">${app.name}</div>
+              <div class="text-[10px] text-zinc-400">설정: ${formatHoursText(config.hours)}</div>
+            </div>
+          </div>
+          <div class="flex flex-col items-end space-y-1">
+            <span class="text-xs font-mono font-bold text-brandGreen" id="appTimer_${app.id}">
+              <i class="fa-regular fa-clock text-[10px] mr-1"></i>${readableTime}
+            </span>
+            <span class="text-[9px] text-red-300 bg-red-950/80 px-1.5 py-0.5 rounded border border-red-800/60 font-semibold">
+              ${config.blockWeb ? '앱+웹 차단' : '앱 차단'}
+            </span>
+          </div>
+        `;
+        activeContainer.appendChild(item);
+      });
+    }
+
+    // Update Notification Banner
+    function updateNotificationBanner() {
+      const selectedKeys = Object.keys(selectedAppsState);
+      if (selectedKeys.length === 0) return;
+
+      const firstAppName = APPS_DATA.find(a => a.id === selectedKeys[0]).name.split(' ')[0];
+      const countExtra = selectedKeys.length - 1;
+      const appText = countExtra > 0 ? `${firstAppName} 외 ${countExtra}개` : firstAppName;
+
+      const bannerText = `[스크린 패널티] ${appText} 잠금 진행 중`;
+      
+      const bannerEl = document.getElementById('systemNotificationBanner');
+      const textEl = document.getElementById('notificationText');
+      if (textEl) textEl.innerText = bannerText;
+      if (bannerEl) bannerEl.classList.remove('hidden');
+
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("스크린 패널티 가동 중", {
+          body: `${appText} 사용 및 알림이 완벽 차단되었습니다.`,
+          icon: "https://cdn-icons-png.flaticon.com/512/1828/1828843.png"
+        });
+      }
+    }
+
+    function updateTimerDisplay() {
+      const hrs = Math.floor(remainingSeconds / 3600);
+      const mins = Math.floor((remainingSeconds % 3600) / 60);
+      const secs = remainingSeconds % 60;
+
+      const timerEl = document.getElementById('timerDisplay');
+      if (timerEl) {
+        timerEl.innerText = `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      }
+
+      Object.keys(selectedAppsState).forEach(appId => {
+        const appTimerEl = document.getElementById(`appTimer_${appId}`);
+        if (appTimerEl) {
+          const config = selectedAppsState[appId];
+          appTimerEl.innerHTML = `<i class="fa-regular fa-clock text-[10px] mr-1"></i>${formatSecondsToReadable(config.remainingSec)}`;
+        }
+      });
+    }
+
+    function updateTimer() {
+      if (remainingSeconds <= 0) {
+        clearInterval(lockTimerInterval);
+        lockTimerInterval = null;
+        finishPenalty();
+        return;
+      }
+
+      remainingSeconds--;
+
+      Object.keys(selectedAppsState).forEach(appId => {
+        if (selectedAppsState[appId].remainingSec > 0) {
+          selectedAppsState[appId].remainingSec--;
+        }
+      });
+
+      updateTimerDisplay();
+    }
+
+    function showBlockedAppAttemptModal(appName) {
+      showModal(
+        `'${appName}' 실행 불가!`,
+        `현재 스크린 패널티가 가동 중입니다.\n알림이 차단되었으며 해당 앱을 사용할 수 없습니다.`,
+        "blocked"
+      );
+    }
+
+    function finishPenalty() {
+      const bannerEl = document.getElementById('systemNotificationBanner');
+      if (bannerEl) bannerEl.classList.add('hidden');
+      renderReportScreen();
+      goToStep('stepReport');
+    }
+
+    function renderReportScreen() {
+      const selectedKeys = Object.keys(selectedAppsState);
+      let totalHours = 0;
+      selectedKeys.forEach(k => totalHours += selectedAppsState[k].hours);
+      const avgHours = selectedKeys.length > 0 ? (totalHours / selectedKeys.length).toFixed(1) : 0;
+
+      const diagCard = document.getElementById('diagnosisCard');
+      let statusText = "";
+      let statusClass = "";
+      let statusDesc = "";
+
+      if (avgHours < 2) {
+        statusText = "양호 (보통 수준)";
+        statusClass = "bg-emerald-950/40 border-emerald-500/40 text-emerald-300";
+        statusDesc = "스스로 스마트폰 사용량을 아주 잘 제어하고 있습니다. 현재 습관을 계속 유지하세요!";
+      } else if (avgHours < 4) {
+        statusText = "주의 (약한 중독 경향)";
+        statusClass = "bg-yellow-950/40 border-yellow-500/40 text-yellow-300";
+        statusDesc = "SNS 활용 시간이 조금 긴 편입니다. 공부나 집중할 때는 스크린 패널티를 적극 활용해보세요.";
+      } else {
+        statusText = "위험 (중독 위험군)";
+        statusClass = "bg-red-950/40 border-red-500/40 text-red-300";
+        statusDesc = "스마트폰 및 SNS 의존도가 매우 높습니다! 하루 사용 제한 목표를 더 늘려 습관을 교정해야 합니다.";
+      }
+
+      if (diagCard) {
+        diagCard.className = `p-4 rounded-xl mb-6 text-left border ${statusClass}`;
+        diagCard.innerHTML = `
+          <div class="flex justify-between items-center mb-1">
+            <span class="text-xs font-bold uppercase tracking-wider">스마트폰 중독 진단 결과</span>
+            <span class="text-xs px-2 py-0.5 rounded font-black bg-black/40">${statusText}</span>
+          </div>
+          <p class="text-xs leading-relaxed opacity-90">${statusDesc}</p>
+        `;
+      }
+
+      const reportAppList = document.getElementById('reportAppList');
+      if (!reportAppList) return;
+      reportAppList.innerHTML = '';
+
+      selectedKeys.forEach(appId => {
+        const app = APPS_DATA.find(a => a.id === appId);
+        const config = selectedAppsState[appId];
+
+        const item = document.createElement('div');
+        item.className = "p-3 rounded-lg bg-zinc-900 border border-zinc-800 flex justify-between items-center";
+        item.innerHTML = `
+          <div class="flex items-center space-x-3">
+            <i class="${app.icon} text-base" style="color: ${app.color}"></i>
+            <div>
+              <div class="text-xs font-bold text-white">${app.name}</div>
+              <div class="text-[10px] text-zinc-500">절약한 제한 시간: ${formatHoursText(config.hours)}</div>
+            </div>
+          </div>
+          <span class="text-xs font-mono font-bold text-brandGreen">성공 (0분 사용)</span>
+        `;
+        reportAppList.appendChild(item);
+      });
+    }
+
+    window.resetApp = function() {
+      selectedAppsState = {};
+      remainingSeconds = 0;
+      if (lockTimerInterval) {
+        clearInterval(lockTimerInterval);
+        lockTimerInterval = null;
+      }
+      const bannerEl = document.getElementById('systemNotificationBanner');
+      if (bannerEl) bannerEl.classList.add('hidden');
+      renderAppSelectionList();
+      goToStep('stepSelectApp');
+    };
+
+    window.showModal = function(title, desc, type) {
+      const modalTitle = document.getElementById('modalTitle');
+      const modalDesc = document.getElementById('modalDesc');
+      if (modalTitle) modalTitle.innerText = title;
+      if (modalDesc) modalDesc.innerText = desc;
+      
+      const iconBox = document.getElementById('modalIcon');
+      if (iconBox && (type === 'blocked' || type === 'warning')) {
+        iconBox.className = "w-14 h-14 rounded-full bg-red-500/10 text-brandRed border border-red-500/30 flex items-center justify-center mx-auto mb-4 text-2xl";
+        iconBox.innerHTML = `<i class="fa-solid fa-lock"></i>`;
+      }
+      const modalOverlay = document.getElementById('modalOverlay');
+      if (modalOverlay) modalOverlay.classList.remove('hidden');
+    };
+
+    window.closeModal = function() {
+      const modalOverlay = document.getElementById('modalOverlay');
+      if (modalOverlay) modalOverlay.classList.add('hidden');
+    };
+
+    window.attemptUninstall = function() {
+      const selectedKeys = Object.keys(selectedAppsState);
+
+      if (remainingSeconds > 0) {
+        showModal(
+          "앱 삭제 불가!",
+          "제한한 앱의 패널티 시간이 아직 남아있어 스크린 패널티 앱을 지울 수 없습니다.",
+          "warning"
+        );
+        return;
+      }
+
+      if (selectedKeys.length === 0) {
+        alert("스크린 패널티 앱이 성공적으로 삭제되었습니다.");
+        location.reload();
+        return;
+      }
+
+      openUninstallCheckModal();
+    };
+
+    function openUninstallCheckModal() {
+      const container = document.getElementById('uninstallAppList');
+      if (!container) return;
+      container.innerHTML = '';
+
+      Object.keys(selectedAppsState).forEach(appId => {
+        const app = APPS_DATA.find(a => a.id === appId);
+        const item = document.createElement('div');
+        item.className = "p-2.5 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-between";
+        item.innerHTML = `
+          <div class="flex items-center space-x-2">
+            <i class="${app.icon} text-xs" style="color: ${app.color}"></i>
+            <span class="text-xs text-white">${app.name}</span>
+          </div>
+          <label class="flex items-center space-x-1.5 cursor-pointer">
+            <input type="checkbox" onchange="checkUninstallEligibility()" class="uninstall-app-check w-4 h-4 accent-emerald-500 rounded">
+            <span class="text-[11px] text-zinc-400">핸드폰에서 삭제함</span>
+          </label>
+        `;
+        container.appendChild(item);
+      });
+
+      checkUninstallEligibility();
+      const modal = document.getElementById('uninstallCheckModal');
+      if (modal) modal.classList.remove('hidden');
+    }
+
+    window.closeUninstallModal = function() {
+      const modal = document.getElementById('uninstallCheckModal');
+      if (modal) modal.classList.add('hidden');
+    };
+
+    window.checkUninstallEligibility = function() {
+      const checkboxes = document.querySelectorAll('.uninstall-app-check');
+      let allChecked = checkboxes.length > 0;
+
+      checkboxes.forEach(cb => {
+        if (!cb.checked) allChecked = false;
+      });
+
+      const btn = document.getElementById('btnConfirmUninstall');
+      if (btn) {
+        if (allChecked) {
+          btn.disabled = false;
+          btn.className = "w-full py-3 rounded-xl bg-brandRed hover:bg-brandRedHover text-white font-bold text-sm transition cursor-pointer";
+        } else {
+          btn.disabled = true;
+          btn.className = "w-full py-3 rounded-xl bg-zinc-800 text-zinc-500 font-bold text-sm transition cursor-not-allowed";
+        }
+      }
+    };
+
+    window.finalUninstallProcess = function() {
+      alert("제한했던 모든 앱이 제거된 것을 확인했습니다. 스크린 패널티 앱이 삭제됩니다.");
+      location.reload();
+    };
+
+    // DOMReady Initialization
+    document.addEventListener('DOMContentLoaded', function() {
+      renderAppSelectionList();
+    });
+  </script>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4 sm:p-6">
+
+  <!-- Simulated OS Status Bar Notification (Top Banner) -->
+  <div id="systemNotificationBanner" class="hidden w-full max-w-md mb-3 p-3 bg-zinc-900/95 border border-red-500/50 rounded-2xl shadow-xl flex items-center justify-between animate-bounce">
+    <div class="flex items-center space-x-3">
+      <div class="w-8 h-8 rounded-full bg-red-500/20 text-brandRed flex items-center justify-center text-sm border border-red-500/40">
+        <i class="fa-solid fa-bell-slash"></i>
+      </div>
+      <div>
+        <div class="text-[10px] text-red-400 font-bold uppercase tracking-wider">시스템 알림 차단 활성화됨</div>
+        <div id="notificationText" class="text-xs font-medium text-white">유튜브 외 1개 잠금 진행 중</div>
+      </div>
+    </div>
+    <span class="text-[10px] text-zinc-500 font-mono">방해금지</span>
+  </div>
+
+  <!-- Main Mobile Shell Container -->
+  <div class="w-full max-w-md bg-brandDark rounded-3xl border border-brandBorder shadow-2xl overflow-hidden flex flex-col min-h-[750px] relative">
+    
+    <!-- Header -->
+    <header class="p-5 border-b border-brandBorder flex justify-between items-center bg-brandCard/50">
+      <div class="flex items-center space-x-2">
+        <div class="w-3 h-3 rounded-full bg-brandRed"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+        <div class="w-3 h-3 rounded-full bg-brandGreen"></div>
+        <span class="ml-2 font-bold text-sm tracking-wider text-gray-300">SCREEN PENALTY</span>
+      </div>
+      <button id="btnUninstallApp" onclick="attemptUninstall()" class="text-xs px-2.5 py-1 rounded bg-red-950/60 text-red-400 border border-red-800/50 hover:bg-red-900 transition flex items-center gap-1">
+        <i class="fa-solid fa-trash-can"></i> 앱 삭제
+      </button>
+    </header>
+
+    <!-- STEP 1: Onboarding View -->
+    <div id="stepOnboarding" class="flex-1 flex flex-col items-center justify-center p-6 text-center">
+      <div class="w-20 h-20 rounded-2xl bg-zinc-800/80 border border-zinc-700 flex items-center justify-center mb-6 shadow-inner text-brandGreen">
+        <i class="fa-solid fa-hand-holding-hand text-4xl"></i>
+      </div>
+      <h1 class="text-2xl font-bold mb-3 text-white leading-tight">
+        오늘 핸드폰 사용시간을<br><span class="text-brandGreen">줄여볼까요?</span>
+      </h1>
+      <p class="text-sm text-brandGray mb-8 leading-relaxed max-w-xs">
+        나도 모르게 손이 가는 SNS와 앱들,<br>강력한 스크린 패널티로 공부와 할 일에 집중해보세요.
+      </p>
+      <button onclick="goToStep('stepSelectApp')" class="w-full py-4 rounded-xl bg-brandGreen hover:bg-brandGreenHover text-black font-extrabold text-base transition shadow-lg shadow-emerald-900/20 active:scale-95">
+        네, 시작하기
+      </button>
+    </div>
+
+    <!-- STEP 2: App Selection & Time Setting -->
+    <div id="stepSelectApp" class="hidden flex-1 flex flex-col p-6 overflow-y-auto">
+      <div class="flex justify-between items-center mb-1">
+        <h2 class="text-xl font-bold text-white">차단할 앱 선택하기</h2>
+        <button onclick="goToStep('stepActivePenalty')" class="text-xs text-brandGreen hover:underline flex items-center gap-1 font-semibold">
+          잠금화면으로 <i class="fa-solid fa-arrow-right"></i>
+        </button>
+      </div>
+      <p class="text-xs text-brandGray mb-4">제한 시간을 설정하고 모바일 웹 차단 여부를 체크하세요.</p>
+
+      <!-- App List -->
+      <div class="space-y-3 flex-1 mb-6" id="appListContainer">
+        <!-- Apps dynamically inserted -->
+      </div>
+
+      <button onclick="startLockout()" class="w-full py-4 rounded-xl bg-brandGreen hover:bg-brandGreenHover text-black font-extrabold text-base transition shadow-lg shadow-emerald-900/20 active:scale-95">
+        패널티 잠금 시작하기 (<span id="selectedCount">0</span>개)
+      </button>
+    </div>
+
+    <!-- STEP 3: Lock Screen / Active Penalty View -->
+    <div id="stepActivePenalty" class="hidden flex-1 flex flex-col p-6 justify-between text-center">
+      <!-- Upper Controls for Back/Add Apps -->
+      <div class="flex justify-between items-center">
+        <button onclick="goToStep('stepSelectApp')" class="text-xs text-zinc-400 hover:text-white px-3 py-1.5 rounded-lg bg-zinc-800/80 border border-zinc-700 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-arrow-left"></i> 뒤로가기
+        </button>
+        <button onclick="goToStep('stepSelectApp')" class="text-xs text-emerald-400 hover:text-emerald-300 font-bold px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-800/60 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-plus"></i> 다른 앱 추가 차단
+        </button>
+      </div>
+
+      <div class="mt-2">
+        <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-red-500/10 text-brandRed border border-red-500/20 mb-3 animate-pulse">
+          <i class="fa-solid fa-lock mr-1.5"></i> 스크린 패널티 작동 중
+        </span>
+        <h2 class="text-2xl font-black text-white">잠금 진행 중</h2>
+        <p class="text-xs text-brandGray mt-1">설정한 시간이 종료될 때까지 선택한 앱 사용 및 알림이 완벽히 차단됩니다.</p>
+      </div>
+
+      <!-- Main Timer Display -->
+      <div class="my-4 p-6 rounded-2xl bg-zinc-900/80 border border-zinc-800 shadow-inner">
+        <div class="text-xs text-brandGray mb-2 font-mono">전체 잠금 남은 시간</div>
+        <div id="timerDisplay" class="text-4xl sm:text-5xl font-black text-brandGreen tracking-wider font-mono">00:00:00</div>
+      </div>
+
+      <!-- Blocked Apps Status Grid with Individual Timers -->
+      <div class="text-left bg-zinc-900/40 rounded-xl p-3.5 border border-zinc-800/80 max-h-48 overflow-y-auto space-y-2" id="activeBlockedList">
+        <!-- Dynamic list of locked apps with individual timers -->
+      </div>
+
+      <!-- High Visibility Warning Message Box -->
+      <div class="mt-4 bg-red-950/80 border-2 border-red-600/90 rounded-xl p-3.5 text-xs text-red-200 text-left flex items-start space-x-3 warning-glow">
+        <div class="text-brandRed text-lg mt-0.5 animate-bounce">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+        </div>
+        <div class="leading-relaxed">
+          <strong class="text-red-400 font-black block text-xs mb-0.5">[삭제 불가 경고]</strong>
+          <span>이 앱은 현재 <b>삭제 불가능</b> 상태입니다. 잠금이 끝나거나 제한 앱을 스마트폰에서 완전히 지워야 삭제할 수 있습니다.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 4: Time Ended / Report & Addiction Diagnosis View -->
+    <div id="stepReport" class="hidden flex-1 flex flex-col p-6 overflow-y-auto">
+      <div class="text-center mb-6">
+        <div class="w-12 h-12 rounded-full bg-emerald-500/10 text-brandGreen border border-emerald-500/30 flex items-center justify-center mx-auto mb-2 text-xl">
+          <i class="fa-solid fa-trophy"></i>
+        </div>
+        <h2 class="text-2xl font-extrabold text-white">스크린 패널티 종료!</h2>
+        <p class="text-xs text-brandGray mt-1">목표 시간을 무사히 완료했습니다.</p>
+      </div>
+
+      <!-- Addiction Diagnosis Box -->
+      <div id="diagnosisCard" class="p-4 rounded-xl mb-6 text-left border relative overflow-hidden">
+        <!-- Dynamic content via JS -->
+      </div>
+
+      <!-- Detailed Usage Summary -->
+      <h3 class="text-sm font-bold text-gray-300 mb-3">오늘 차단/목표 리포트</h3>
+      <div class="space-y-2 mb-6" id="reportAppList">
+        <!-- Dynamic report app items -->
+      </div>
+
+      <button onclick="resetApp()" class="w-full py-3.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-bold text-sm transition border border-zinc-700">
+        새로운 목표 설정하기
+      </button>
+    </div>
+
+  </div>
+
+  <!-- Custom Alert Modal -->
+  <div id="modalOverlay" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 w-full max-w-sm text-center shadow-2xl">
+      <div id="modalIcon" class="w-14 h-14 rounded-full bg-red-500/10 text-brandRed border border-red-500/30 flex items-center justify-center mx-auto mb-4 text-2xl">
+        <i class="fa-solid fa-ban"></i>
+      </div>
+      <h3 id="modalTitle" class="text-lg font-bold text-white mb-2">삭제할 수 없습니다!</h3>
+      <p id="modalDesc" class="text-xs text-brandGray leading-relaxed mb-6">
+        제한한 앱의 시간이 완료되지 않았습니다. 패널티 앱은 절대 삭제할 수 없습니다.
+      </p>
+
+      <div id="modalActions" class="space-y-2">
+        <button onclick="closeModal()" class="w-full py-3 rounded-xl bg-brandRed hover:bg-brandRedHover text-white font-bold text-sm transition">
+          확인
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Delete Checklist Modal -->
+  <div id="uninstallCheckModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 w-full max-w-sm text-left shadow-2xl">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-triangle-exclamation text-brandRed"></i> 스크린 패널티 앱 삭제 조건
+        </h3>
+        <button onclick="closeUninstallModal()" class="text-zinc-500 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <p class="text-xs text-brandGray mb-4">
+        패널티 앱을 완전히 지우려면 아래 <b>제한했던 대상 앱들을 스마트폰에서 먼저 삭제</b>해야만 강제 해제할 수 있습니다.
+      </p>
+
+      <div id="uninstallAppList" class="space-y-2.5 mb-6 max-h-40 overflow-y-auto">
+        <!-- Target apps checkboxes -->
+      </div>
+
+      <button id="btnConfirmUninstall" onclick="finalUninstallProcess()" disabled class="w-full py-3 rounded-xl bg-zinc-800 text-zinc-500 font-bold text-sm transition cursor-not-allowed">
+        모든 앱 삭제 완료 (해제 불가)
+      </button>
+    </div>
+  </div>
+
+</body>
+</html>
